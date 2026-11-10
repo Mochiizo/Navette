@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14181f">
+<title>Navette</title>
+<style>
+  :root {
+    --bg: #f4f1ea; --card: #fffdf8; --ink: #1d2128; --muted: #6b6f78;
+    --line: #e3ded2; --accent: #e8590c; --accent-ink: #fff; --ok: #2f9e44; --err: #c92a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14181f; --card: #1d222b; --ink: #eef0f3; --muted: #9aa1ad;
+            --line: #2c323d; --accent: #ff7a2f; --ok: #51cf66; --err: #ff6b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--ink);
+         padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: center; gap: 10px; margin: 4px 0 18px; }
+  .logo { width: 34px; height: 34px; border-radius: 10px; background: var(--accent);
+          display: grid; place-items: center; color: var(--accent-ink); font-weight: 800; }
+  h1 { font-size: 20px; margin: 0; }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+            padding: 16px; margin-bottom: 14px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .pick { display: block; width: 100%; padding: 16px; border-radius: 12px; border: 0;
+          background: var(--accent); color: var(--accent-ink); font-size: 17px; font-weight: 650;
+          text-align: center; }
+  .pick:active { opacity: .85; }
+  input[type=file] { display: none; }
+  .summary { margin: 12px 0 0; font-size: 14px; color: var(--muted); }
+  .summary strong { color: var(--ink); }
+  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  ul { list-style: none; margin: 12px 0 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line);
+       font-size: 14px; }
+  li .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .state { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  li.ok .state { color: var(--ok); } li.err .state { color: var(--err); }
+  .note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .ghost { border: 1px solid var(--line); background: transparent; color: var(--ink);
+           padding: 8px 12px; border-radius: 10px; font-size: 14px; }
+  a.dl { color: var(--accent); font-weight: 600; text-decoration: none; white-space: nowrap; }
+  li.got a.dl { color: var(--ok); }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .head h2 { margin: 0; }
+  #whereNote { margin: 0 0 4px; }
+  .empty { color: var(--muted); font-size: 14px; margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">N</div>
+  <div><h1>Navette</h1><p>Connecté à <strong>{{PC_NAME}}</strong></p></div>
+</header>
+
+<section>
+  <h2>Envoyer vers l'ordinateur</h2>
+  <label class="pick" for="files">Choisir des photos, vidéos ou fichiers</label>
+  <input id="files" type="file" multiple>
+  <div id="sendBox" hidden>
+    <p class="summary" id="summary"></p>
+    <div class="bar"><i id="totalBar"></i></div>
+    <p class="note" id="wakeNote">Gardez cette page ouverte et l'écran allumé jusqu'à la fin.</p>
+    <button class="ghost" id="retry" hidden>Réessayer les fichiers en échec</button>
+    <ul id="sendList"></ul>
+  </div>
+</section>
+
+<section>
+  <div class="head">
+    <h2>Reçus de l'ordinateur</h2>
+    <button class="ghost" id="dlAll" hidden>Tout télécharger</button>
+  </div>
+  <p class="note" id="whereNote"></p>
+  <ul id="recvList"><p class="empty">Rien pour l'instant. Les fichiers partagés depuis le PC apparaîtront ici.</p></ul>
+</section>
+
+<script>
+const token = new URLSearchParams(location.search).get('t');
+const q = (s) => document.querySelector(s);
+const fmt = (n) => n < 1024 ? n + ' o' : n < 1048576 ? (n/1024).toFixed(0) + ' Ko'
+  : n < 1073741824 ? (n/1048576).toFixed(1) + ' Mo' : (n/1073741824).toFixed(2) + ' Go';
+const esc = (s) => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// ---------- Envoi vers le PC ----------
+let queue = [];       // { file, li, status: 'wait'|'run'|'ok'|'err', sent }
+let running = false;
+let wakeLock = null;
+
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator && !wakeLock) wakeLock = await navigator.wakeLock.request('screen');
+    if (!on && wakeLock) { await wakeLock.release(); wakeLock = null; }
+  } catch (_) { /* pas supporté : on garde juste le message */ }
+}
+document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(true); });
+
+q('#files').addEventListener('change', (e) => {
+  const picked = [...e.target.files];
+  e.target.value = '';
+  if (!picked.length) return;
+  q('#sendBox').hidden = false;
+  for (const file of picked) {
+    const li = document.createElement('li');
+    li.innerHTML = `<span class="name">${esc(file.name)}</span><span class="state">en attente</span>`;
+    q('#sendList').appendChild(li);
+    queue.push({ file, li, status: 'wait', sent: 0 });
+  }
+  run();
+});
+
+q('#retry').addEventListener('click', () => {
+  queue.filter(i => i.status === 'err').forEach(i => { i.status = 'wait'; i.sent = 0; setState(i, 'en attente'); });
+  run();
+});
+
+function setState(item, text, cls) {
+  item.li.className = cls || '';
+  item.li.querySelector('.state').textContent = text;
+}
+
+function refreshSummary() {
+  const total = queue.reduce((a, i) => a + i.file.size, 0);
+  const sent = queue.reduce((a, i) => a + (i.status === 'ok' ? i.file.size : i.sent), 0);
+  const ok = queue.filter(i => i.status === 'ok').length;
+  const err = queue.filter(i => i.status === 'err').length;
+  q('#summary').innerHTML = `<strong>${ok} / ${queue.length}</strong> fichiers envoyés · ${fmt(sent)} sur ${fmt(total)}`
+    + (err ? ` · <span style="color:var(--err)">${err} en échec</span>` : '');
+  q('#totalBar').style.width = total ? (100 * sent / total).toFixed(1) + '%' : '0';
+  q('#retry').hidden = !(err && !running);
+}
+
+function uploadOne(item, batch, index, count) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    const params = new URLSearchParams({ t: token, name: item.file.name, size: item.file.size, batch, index, count });
+    xhr.open('POST', '/api/v1/phone/upload?' + params);
+    xhr.upload.onprogress = (e) => {
+      item.sent = e.loaded;
+      setState(item, item.file.size ? Math.floor(100 * e.loaded / item.file.size) + ' %' : '…');
+      refreshSummary();
+    };
+    xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300 ? null : (xhr.responseText || 'erreur ' + xhr.status));
+    xhr.onerror = () => resolve('connexion perdue');
+    xhr.send(item.file);
+  });
+}
+
+async function run() {
+  if (running) return;
+  running = true;
+  keepAwake(true);
+  const batch = Math.random().toString(36).slice(2, 12);
+  const todo = queue.filter(i => i.status === 'wait');
+  for (let n = 0; n < todo.length; n++) {
+    const item = todo[n];
+    item.status = 'run';
+    let error = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      item.sent = 0;
+      error = await uploadOne(item, batch, n, todo.length);
+      if (!error) break;
+      setState(item, `nouvel essai (${attempt}/3)…`);
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+    }
+    item.status = error ? 'err' : 'ok';
+    setState(item, error ? 'échec' : '✓ envoyé', error ? 'err' : 'ok');
+    if (error) item.li.title = error;
+    refreshSummary();
+  }
+  running = false;
+  keepAwake(false);
+  refreshSummary();
+  if (queue.every(i => i.status === 'ok')) q('#wakeNote').textContent = 'Tout est arrivé sur l\'ordinateur.';
+}
+
+// ---------- Fichiers partagés par le PC ----------
+// Le navigateur range les fichiers téléchargés dans le dossier Téléchargements
+// du téléphone. Une page web ne peut pas choisir un autre dossier.
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+q('#whereNote').textContent = isIOS
+  ? 'Ils arrivent dans l\'app Fichiers › Téléchargements. Pour mettre une photo dans Photos : ouvrez-la dans Fichiers › Partager › Enregistrer l\'image.'
+  : 'Ils arrivent dans le dossier Téléchargements (Download) du téléphone.';
+
+let shared = [];
+let lastShared = '';
+const got = new Set(); // fichiers déjà téléchargés pendant cette visite
+const dlUrl = (f) => `/api/v1/phone/download/${f.id}?t=${encodeURIComponent(token)}`;
+
+function download(f) {
+  const a = document.createElement('a');
+  a.href = dlUrl(f);
+  a.download = f.name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  markGot(f.id);
+}
+
+function markGot(id) {
+  got.add(id);
+  const li = q(`#recvList li[data-id="${id}"]`);
+  if (li) { li.classList.add('got'); li.querySelector('.dl').textContent = '✓ Téléchargé'; }
+  updateAllButton();
+}
+
+function updateAllButton() {
+  const left = shared.filter(f => !got.has(f.id)).length;
+  const btn = q('#dlAll');
+  btn.hidden = shared.length < 2;
+  btn.disabled = left === 0;
+  btn.textContent = left ? `Tout télécharger (${left})` : 'Tout est téléchargé';
+}
+
+q('#recvList').addEventListener('click', (e) => {
+  const a = e.target.closest('a.dl');
+  if (!a) return;
+  e.preventDefault();
+  const f = shared.find(x => x.id === a.dataset.id);
+  if (f) download(f);
+});
+
+q('#dlAll').addEventListener('click', async () => {
+  // Un petit délai entre chaque fichier : sinon le navigateur n'en garde qu'un.
+  for (const f of shared.filter(x => !got.has(x.id))) {
+    download(f);
+    await new Promise(r => setTimeout(r, 1200));
+  }
+});
+
+async function loadShared() {
+  try {
+    const r = await fetch('/api/v1/phone/shared?t=' + encodeURIComponent(token), { cache: 'no-store' });
+    if (!r.ok) return;
+    const list = await r.json();
+    const key = JSON.stringify(list.map(f => f.id));
+    if (key === lastShared) return;
+    lastShared = key;
+    shared = list;
+    const ul = q('#recvList');
+    if (!list.length) {
+      ul.innerHTML = '<p class="empty">Rien pour l\'instant. Les fichiers partagés depuis le PC apparaîtront ici.</p>';
+    } else {
+      ul.innerHTML = list.map(f => {
+        const done = got.has(f.id);
+        return `<li data-id="${f.id}" class="${done ? 'got' : ''}"><span class="name">${esc(f.name)}</span>
+          <span class="state">${fmt(f.size)}</span>
+          <a class="dl" data-id="${f.id}" href="${dlUrl(f)}">${done ? '✓ Téléchargé' : 'Télécharger'}</a></li>`;
+      }).join('');
+    }
+    updateAllButton();
+  } catch (_) { /* PC injoignable : on réessaie plus tard */ }
+}
+loadShared();
+setInterval(loadShared, 4000);
+</script>
+</body>
+</html>

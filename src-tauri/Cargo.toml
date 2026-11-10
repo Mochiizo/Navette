@@ -1,0 +1,23 @@
+[package]
+name = "navette"
+version = "0.2.1"
+description = "Transfert de fichiers en réseau local : PC ⇄ PC et PC ⇄ téléphone"
+edition = "2021"
+
+[lib]
+name = "navette_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+navette-core = { path = "../navette-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }
+tracing-subscriber = "0.3"
+anyhow = "1"
+serde_json = "1"
