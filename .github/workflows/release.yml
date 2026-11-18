@@ -1,0 +1,41 @@
+name: Release
+
+# Publier une nouvelle version :
+#   1. changer "version" dans package.json (ex. 0.5.0)
+#   2. git commit -am "Navette 0.5.0" && git tag v0.5.0 && git push && git push --tags
+# GitHub compile l'installateur et crée la Release avec latest.yml :
+# les Navette déjà installées proposent alors la mise à jour toutes seules.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Vérifier que le tag correspond à la version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Le tag $GITHUB_REF_NAME ne correspond pas à la version v$VERSION de package.json"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Compiler et publier la Release
+        run: npm run release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
